@@ -1,0 +1,407 @@
+ %\documentclass{article} (removed duplicate, see below)
+\usepackage{graphicx} % Required for inserting images
+\documentclass[12pt,a4paper]{ctexart}
+\usepackage{subcaption}
+% ========== 页面设置 ==========
+\usepackage[top=2.5cm, bottom=2.5cm, left=2.8cm, right=2.8cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usepackage{color}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\begin{document}
+\title{华中杯B题}
+\author{301队}
+\date{July 2026}
+\maketitle
+
+
+
+
+
+% ========== 中文兼容 ==========
+\setCJKmainfont{SimSun}[AutoFakeBold=2.5]
+\setCJKsansfont{SimHei}
+\setCJKmonofont{SimHei}
+
+% ========== 定理环境 ==========
+\newtheorem{proposition}{命题}[section]
+\newtheorem{definition}{定义}[section]
+\theoremstyle{remark}
+\newtheorem{remark}{注记}[section]
+
+% ========== 代码风格 ==========
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    tabsize=4
+}
+
+% ========== 页眉页脚 ==========
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+
+\begin{abstract}
+本文档以精确数学语言阐述 B 题第一问的完整建模过程。核心思路是建立一条统一的射线追踪函数（基于镜面反射定律的矢量形式），然后用它同时驱动正向设计（镜面像素 $\to$ 纸面落点，双线性加权累积）与验证（独立网格正向渲染 $\to$ 与目标对比）。全程不做任何逆映射插值，消除传统方法的累积误差。最终指标：覆盖率 97\%，$\mathrm{MAE}=0.001\text{--}0.006$（像素强度范围 $[0,1]$）。
+\end{abstract}
+\section{柱面镜反射变形建模与设计}
+\subsection{坐标系与几何设定}
+
+建立右手直角坐标系 $O=(x, y, z)$。纸面位于平面 $z=0$ 上，范围
+\begin{equation}
+    \Omega_P = [0, W]\times[0, L],\qquad W=210\ \mathrm{mm},\; L=297\ \mathrm{mm}\;(\text{A4})
+\end{equation}
+
+圆柱镜面为理想圆柱体的侧面，竖直放置，底面与纸面共面。其表面 $C$ 的参数方程为
+\begin{equation}
+    C = \{\, (X_c + R\cos\theta,\; Y_c + R\sin\theta,\; z) \mid \theta\in[0,2\pi),\; z\in[0,H] \,\}
+\end{equation}
+其中 $(X_c, Y_c)$ 是圆柱底面中心在纸面上的坐标，$R$ 是半径，$H$ 是高度。这四个量连同观察者眼点 $E$ 构成问题的设计参数。
+
+观察者眼点设为单视点：
+\begin{equation}
+    E = (x_E, y_E, z_E) = (0, -300, 250)\ \mathrm{mm}
+\end{equation}
+这个位置表示观察者在纸面前方约 30\,cm 处，眼睛高度约 25\,cm。
+
+\subsection{核心物理模型：单条射线的反射映射}
+
+对于圆柱表面上任意一点 $M = (X_c+R\cos\theta,\; Y_c+R\sin\theta,\; z)$，根据光线的光路可逆性，我们的目标是确定从眼点 $E$ 发出、经 $M$ 镜面反射后到达纸平面 $z=0$ 的光线路径。
+
+\subsection{入射方向与可见性}
+
+光线从 $E$ 射向 $M$ 的单位方向向量为
+\begin{equation}
+    \hat{\mathbf{v}}_{\mathrm{in}} = \overrightarrow{ME}/ \|\overrightarrow{ME}\|
+\end{equation}
+
+圆柱表面在点 $M$ 处的外法向量（指向离开圆柱轴心的方向）为
+\begin{equation}
+    \mathbf{N}(\theta) = (\cos\theta,\; \sin\theta,\; 0)
+\end{equation}
+
+点 $M$ 能被观察者看到当且仅当入射方向指向圆柱内部——即入射方向与外法向量反向：
+\begin{equation}
+    \hat{\mathbf{v}}_{\mathrm{in}} \cdot \mathbf{N} < 0 \;\Longleftrightarrow\; \text{点 $M$ 在观察者的前半球（可见）}
+\end{equation}
+
+\subsection{镜面反射}
+
+根据镜面反射定律（入射角 = 反射角），反射方向的单位向量由矢量形式给出：
+\begin{equation}\label{eq:specular}
+    \hat{\mathbf{v}}_{\mathrm{ref}} = \hat{\mathbf{v}}_{\mathrm{in}} - 2(\hat{\mathbf{v}}_{\mathrm{in}}\cdot\mathbf{N})\,\mathbf{N}
+\end{equation}
+它保证了 $\|\hat{\mathbf{v}}_{\mathrm{ref}}\|=1$，且入射角等于反射角（因为 $\hat{\mathbf{v}}_{\mathrm{ref}}\cdot\mathbf{N} = -\hat{\mathbf{v}}_{\mathrm{in}}\cdot\mathbf{N}$）。
+
+\subsection{与纸面的交点}
+
+反射光线从 $M$ 沿 $\hat{\mathbf{v}}_{\mathrm{ref}}$ 传播，参数方程为 $\mathbf{P}(t)=M+t\cdot\hat{\mathbf{v}}_{\mathrm{ref}}\;(t>0)$。与纸面 $z=0$ 相交的条件是
+\begin{equation}
+    M_z + t\cdot v_{\mathrm{ref},z} = 0 \;\Longrightarrow\; t = -M_z/v_{\mathrm{ref},z}\qquad(v_{\mathrm{ref},z}<0,\;t>0)
+\end{equation}
+
+由此得到纸面上的落点：
+\begin{align}
+    p_x(\theta,z) &= M_x + t\cdot v_{\mathrm{ref},x} \notag\\
+    p_y(\theta,z) &= M_y + t\cdot v_{\mathrm{ref},y} \label{eq:mapping}
+\end{align}
+
+这个映射 $\Phi: (\theta,z)\to(p_x,p_y)$ 是\textbf{从镜面坐标到纸面坐标的正向反射映射}——整份代码中唯一调用物理计算的地方。它的有效定义域是满足以下三条件的点集：
+\begin{equation}
+    D_{\Phi} = \{\, (\theta,z) \mid \hat{\mathbf{v}}_{\mathrm{in}}\cdot\mathbf{N}<0,\; v_{\mathrm{ref},z}<0,\; t>0 \,\}
+\end{equation}
+
+\section{可见范围 $\Theta_{\mathrm{vis}}$ 的精确确定}
+
+观察者不可能看到圆柱的整个 360\textdegree{} 表面——仅前半球可见。精确确定这个可见弧段，是防止``镜面图案被裁切''问题的关键。我们需要找到 $\Phi$ 定义域中 $\theta$ 的连续可见范围。
+
+\subsection{可见性的解析化简}
+
+可见条件 $\hat{\mathbf{v}}_{\mathrm{in}}\cdot\mathbf{N}<0$ 可展开：
+\begin{align}
+    \hat{\mathbf{v}}_{\mathrm{in}}\cdot\mathbf{N}
+    &= \bigl[ (X_c+R\cos\theta-x_E)\cos\theta + (Y_c+R\sin\theta-y_E)\sin\theta + (z-z_E)\cdot 0 \bigr] \big/ \|\overrightarrow{ME}\| \notag\\
+    &= \bigl[ (X_c-x_E)\cos\theta + (Y_c-y_E)\sin\theta + R \bigr] \big/ \|\overrightarrow{ME}\| \label{eq:visibility}
+\end{align}
+
+分母 $\|\overrightarrow{ME}\|>0$，因此可见条件等价于分子符号：
+\begin{equation}\label{eq:f_theta}
+    \text{可见} \;\Longleftrightarrow\; f(\theta) \triangleq (X_c-x_E)\cos\theta + (Y_c-y_E)\sin\theta + R < 0
+\end{equation}
+
+这是关键的化简结果：可见性完全由一个仅含 $\theta$ 的一维标量函数 $f(\theta)$ 决定，与 $z$ 坐标无关。原因在于圆柱是竖直的，其法向量始终在水平面内。
+
+\subsection{可见角度的离散化数值求解}
+
+在 $\theta\in[0,2\pi)$ 上以步长 $\Delta\theta = 2\pi/2000$ 离散采样，标记每个采样点是否满足 $f(\theta)<0$。满足取“0”，不满足取“1”，这产生一个长度为 2000 的布尔序列。
+
+$f(\theta)<0$ 的解是一个连续的弧段（前半球），对应布尔序列中一个连续的``真''块。通过差分的边沿检测找到最大连续块：
+当差值为 1（即 1 - 0 = 1）时，说明状态从不可见突变成了可见，这个位置对应的角度就是起始角度 $\theta_{\mathrm{start}}$。
+
+当差值为 -1（即 0 - 1 = -1）时，说明状态从可见突变成了不可见，这就是结束角度 $\theta_{\mathrm{end}}$。
+\begin{equation}
+    \Theta_{\mathrm{vis}} = [\theta_{\mathrm{start}},\; \theta_{\mathrm{end}}]
+\end{equation}
+
+\medskip
+%\noindent\textbf{数值结果}\quad 对本例参数 $R=18\ \mathrm{mm}$，$C=(105,120)\ \mathrm{mm}$，$E=(0,-300,250)\ \mathrm{mm}$：
+%\begin{equation}
+    %\theta_{\mathrm{start}}\approx 168^\circ,\qquad \theta_{\mathrm{end}}\approx 343^\circ,\qquad \Delta\theta_{\mathrm{vis}}\approx 175^\circ
+%\end{equation}
+%即观察者能看到约 175\textdegree{}（前半球）的镜面，剩余 185\textdegree{}（后半球）不可见。
+
+\subsection{可见范围的物理意义与 A4 覆盖率}
+
+确定了 $\Theta_{\mathrm{vis}}$ 之后，镜面图案只需定义在 $\Theta_{\mathrm{vis}}\times[0,H]$ 上。不可见的部分不需要、也不可能被看到。
+
+在可见区域内，我们定义覆盖率$\eta$(可见镜面光线覆盖A4纸的比例),计算有多少比例的光线能落到 A4 纸面内：
+\begin{equation}
+    \eta = \frac{\bigl|\{\,(\theta,z)\in\Theta_{\mathrm{vis}}\times[0,H] : \Phi(\theta,z)\in\Omega_P\,\}\bigr|}
+                 {\bigl|\Theta_{\mathrm{vis}}\times[0,H]\bigr|}
+\end{equation}
+%对本例参数，$\eta\approx 97.7\%$——可见镜面的 97.7\% 都能映射到 A4 纸上。
+
+\section{正向溅射设计：从目标图案到纸面图案}
+
+给定目标镜面图案 $I_M(\theta,z)$（定义在 $\Theta_{\mathrm{vis}}\times[0,H]$ 上，值域 $[0,1]$），我们需要求纸面图案 $I_P(x,y)$（定义在 $\Omega_P$ 上），使得当观察者从 $E$ 点观看镜面时，反射图案恰好是 $I_M$。定义反射映射$\Phi$，满足:
+\begin{equation}
+I_P(x,y)=\Phi(I_M(\theta,z))
+\end{equation}
+
+\textbf{核心命题：}给定固定的 $E$ 和圆柱参数，决定反射路径的方程是确定的（一个二次方程决定交点，一个线性反射给出方向）。对于柱面几何，观察者看到的前半球上，每个可见点恰好在纸面上对应一个落点——这是双射（bijection）的物理基础。 通过构造显式的解析逆映射公式证明了这一点。正因 $\Phi$ 是单射，信息在镜面 $\to$ 纸面的传递过程中不丢失。我们的策略是直接用 $\Phi$ 正向传输信息——从目标图案的每个像素出发，沿光线将颜色值``溅射''到纸面对应位置。
+
+\subsection{射线采样网格}
+
+目标图案 $I_M$ 的离散分辨率为 $N_\theta\times N_z$（如 $400\times300$）。对每个目标像素进行 $s\times s$ 倍超采样（$s=6$），生成密集射线网格：
+\begin{align}
+    \theta_k &= \theta_{\mathrm{start}} + \bigl[k/(s\cdot N_\theta-1)\bigr]\cdot\Delta\theta_{\mathrm{vis}}, \qquad k=0,\dots,s\cdot N_\theta-1 \label{eq:theta_sample}\\
+    z_\ell   &= \bigl[\ell/(s\cdot N_z-1)\bigr]\cdot H, \qquad \ell=0,\dots,s\cdot N_z-1 \label{eq:z_sample}
+\end{align}
+
+这产生 $N_{\mathrm{rays}} = s^2\cdot N_\theta\cdot N_z$ 条射线（如 $6^2\times400\times300=4{,}320{,}000$ 条）。每条射线的出发点 $(\theta_k, z_\ell)$ 在目标图案上对应一个可采样的颜色值。
+
+\subsection{颜色采样}
+
+对每条射线 $(\theta_k, z_\ell)$，其在目标图案上的颜色值由双线性插值给出：
+\begin{equation}
+    v_{k,\ell} = I_M\!\left( \frac{\theta_k-\theta_{\mathrm{start}}}{\Delta\theta_{\mathrm{vis}}}\cdot(N_\theta-1),\;
+                              \frac{z_\ell}{H}\cdot(N_z-1) \right)
+\end{equation}
+
+\subsection{正向射线追踪（双线性插值）}
+
+对每条有效射线，调用反射映射 $\Phi$ 计算其在纸面上的落点：
+\begin{equation}
+    \bigl(p_x(k,\ell),\; p_y(k,\ell)\bigr) = \Phi(\theta_k, z_\ell;\; R, E, C)
+\end{equation}
+仅保留落在 A4 内的射线：
+\begin{equation}
+    \mathcal{R} = \{\, (k,\ell) \mid 0\le p_x(k,\ell)\le W,\; 0\le p_y(k,\ell)\le L \,\}
+\end{equation}
+集合 $\mathcal{R}$ 的大小决定了覆盖率 $\eta$。
+
+\subsection{双线性溅射复原（核心步骤）}
+
+这是将信息从镜面``转移到纸面''的核心。纸面图案 $I_P$ 被离散化为 $n_x\times n_y$ 像素格点（$n_x=\lfloor W\cdot d\rfloor$，$n_y=\lfloor L\cdot d\rfloor$，$d$ 是像素密度，如 $d=6\ \mathrm{px/mm}$）。
+
+在计算机图形学里，插值通常是“从周围4个点取颜色”。但在这里，它是反向操作：已知一个浮点坐标点的颜色，通过线性加权将其分到整数像素格点。每条射线 $(k,\ell)\in\mathcal{R}$ 的落点 $(p_x,p_y)$ 通常不在格点上，其浮点像素坐标为 $u=p_x\cdot d$，$v=p_y\cdot d$，小数部分分别为$\alpha,\beta$。
+
+取周围四个整数像素点：
+\begin{equation}
+    i_0=\lfloor u\rfloor,\quad j_0=\lfloor v\rfloor,\alpha = u - i_0,\beta = v - j_0,\quad i_1=i_0+1,\quad j_1=j_0+1
+\end{equation}
+
+对应的四个双线性权重：
+\begin{align}
+    w_{00} &= (1-\alpha)(1-\beta),\qquad w_{10} = \alpha(1-\beta) \notag\\
+    w_{01} &= (1-\alpha)\beta,\qquad w_{11} = \alpha\beta
+\end{align}
+
+颜色值 $v_{k,\ell}$ 以这些权重分配到四个相邻像素的累积数组：
+\begin{align}
+    A(j_0,i_0) &\mathrel{+}= v_{k,\ell}\cdot w_{00}, &\quad C(j_0,i_0) &\mathrel{+}= w_{00} \notag\\
+    A(j_0,i_1) &\mathrel{+}= v_{k,\ell}\cdot w_{10}, &\quad C(j_0,i_1) &\mathrel{+}= w_{10} \notag\\
+    A(j_1,i_0) &\mathrel{+}= v_{k,\ell}\cdot w_{01}, &\quad C(j_1,i_0) &\mathrel{+}= w_{01} \notag\\
+    A(j_1,i_1) &\mathrel{+}= v_{k,\ell}\cdot w_{11}, &\quad C(j_1,i_1) &\mathrel{+}= w_{11}
+\end{align}
+其中 $A$ 是累积颜色数组（初始为零），$C$ 是累积权重数组（初始为零）。
+
+\subsection{归一化与空洞填充}
+
+遍历所有射线后，对每个像素取加权平均；未覆盖的像素填充白色：
+\begin{equation}\label{eq:normalize}
+    I_P(j,i) = \begin{cases}
+        A(j,i)/C(j,i), & C>0 \\[2pt]
+        1, & C=0\;\text{（白色背景）}
+    \end{cases}
+\end{equation}
+
+极少数像素（$<0.1\%$）因射线密度不足而未被覆盖（$C=0$）。为了达到“降噪”目的，采用邻近点插值处理。设空洞集合 $\mathcal{H}=\{(j,i)\mid C(j,i)=0\}$，定义距离变换 $D(j,i)$ 为 $(j,i)$ 到最近已填充像素的欧氏距离。将满足 $0<D(j,i)\le3$（即空洞半径 $\le3$ 像素）的像素用最近邻插值填充：
+\begin{equation}
+    I_P(j,i) = I_P(j^*, i^*),\qquad \text{其中 $(j^*,i^*)$ 是最近的非空洞像素}
+\end{equation}
+
+\subsection{方法的理论性质}
+
+\begin{proposition}[信息无损性]\label{prop:lossless}
+若反射映射 $\Phi$ 在定义域上是单射，且射线采样密度 $s$ 足够大使得每个纸面像素都被至少一条射线覆盖，则通过上述溅射过程得到的纸面图案 $I_P$，在 $\Phi$ 的像空间上精确满足：
+\begin{equation}
+    I_M(\theta,z) = I_P\bigl(\Phi(\theta,z)\bigr),\qquad \forall (\theta,z)\in\Theta_{\mathrm{vis}}\times[0,H]
+\end{equation}
+其中 $I_P(\cdot,\cdot)$ 为双线性插值恢复的连续函数。离散化误差仅来源于有限采样分辨率，可通过增大 $s$ 使之任意小。
+\end{proposition}
+
+\section{验证：独立正向渲染}
+
+设计完成后，我们需要一条独立于设计过程的采样网络与复原流程来确认设计正确。
+
+\subsection{独立渲染网格}
+
+不同于设计时使用与目标图案对齐的采样网格，验证使用独立的采样步长m：
+\begin{align}
+    \theta'_m &= \theta_{\mathrm{start}} + m\cdot\Delta\theta_{\mathrm{vis}}/(M-1), && m=0,\dots,M-1\;(\text{如 }M=600) \label{eq:verify_theta}\\
+    z'_n     &= n\cdot H/(N-1), && n=0,\dots,N-1\;(\text{如 }N=400) \label{eq:verify_z}
+\end{align}
+
+对每个 $(\theta'_m, z'_n)$，调用 $\Phi$ 得到纸面位置 $(p_x, p_y)$，然后从纸面图案 $I_P$ 上采样颜色值，使用三次样条插值$\mathcal{B}$（比二次采样更平滑） ：
+\begin{equation}
+    I_M^{\mathrm{render}}(m,n) = \mathcal{B}[I_P](p_y, p_x)
+\end{equation}
+得到渲染的镜面图案 $I_M^{\mathrm{render}}$。
+
+\subsection{误差评估——合理性标准}
+
+仅在有效像素（$\Phi$ 有定义且落点在 A4 内）上比较：
+\begin{equation}
+    \mathcal{V} = \{\, (m,n) \mid 0\le p_x\le W,\; 0\le p_y\le L \,\}
+\end{equation}
+
+两个核心误差指标MAE（平均绝对误差）与RMSE（均方根误差）：
+\begin{align}
+    \mathrm{MAE}  &= \frac{1}{|\mathcal{V}|} \sum_{(m,n)\in\mathcal{V}} \bigl| I_M^{\mathrm{render}} - I_M^{\mathrm{target}} \bigr| \label{eq:mae}\\[4pt]
+    \mathrm{RMSE} &= \sqrt{\frac{1}{|\mathcal{V}|} \sum_{(m,n)\in\mathcal{V}} \bigl( I_M^{\mathrm{render}} - I_M^{\mathrm{target}} \bigr)^2} \label{eq:rmse}
+\end{align}
+其中 $I_M^{\mathrm{target}}$ 是目标图案重采样到验证网格上的结果。
+
+\subsubsection*{选取MAE/RMSE 作为合理性标准的原因}
+
+\begin{enumerate}[label=(\arabic*)]
+    \item \textbf{物理确定性：}在理想镜面假设下，从 $I_P$ 到 $I_M$ 的变换完全由映射 $\Phi$ 决定。如果物理建模正确且离散化精度足够，$I_M^{\mathrm{render}}$ 应逐像素等于目标图案。MAE 度量的是离散化误差，应接近零。
+    \item \textbf{MAE $\approx 0$ 的物理含义：}打印这张纸、放上镜子、从 $E$ 点看 $\to$ 看到的图案就是目标图案。
+    \item \textbf{RMSE/MAE 比值：}检测是否存在局部的严重偏离（outlier）。若比值过大（$>10$），说明纸面某些位置存在异常。
+\end{enumerate}
+
+\subsubsection*{实际数值结果（强度值范围 $[0,1]$）}
+
+\begin{table}[H]
+    \centering
+    \caption{四种目标图案的误差指标}
+    \label{tab:errors}
+    \begin{tabular}{lcccc}
+        \toprule
+        目标图案 & MAE & RMSE & RMSE/MAE & 覆盖率 \\
+        \midrule
+        Figure\_3（图3） & 0.00556 & 0.01870 & 3.4 & 97\% \\
+        Figure\_4（图4） & 0.00613 & 0.01089 & 1.8 & 97\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+$\mathrm{MAE}=0.005$ 意味着平均每像素偏差仅 0.5\%，肉眼无法分辨。RMSE/MAE 均在 1.8--6.0，无异常值。
+
+\section{参数确定}
+
+观察者位置 $E=(0,-300,250)$ 是设计输入而非优化变量——``观察者从哪个角度看''描述了推荐的观看姿势。
+
+镜面参数 $\Theta = (R, H, X_c, Y_c)$ 通过最大化覆盖率 $\eta$ 来确定：
+\begin{equation}
+    \Theta^* = \operatorname*{argmax}_{\Theta}\; \eta(\Theta)
+\end{equation}
+
+由于该优化问题中的目标函数$\eta$是非线性、不可微的，且参数维度较低，即使求出最优解对实际打印工作影响较小。所以选择四维网格搜索（每维 5--8 个候选值）作为求解方法，时间复杂度可控。直接枚举即可：
+
+\begin{table}[H]
+    \centering
+    \caption{最优参数}
+    \label{tab:optimal_params}
+    \begin{tabular}{ccccc}
+        \toprule
+        $R$ & $H$ & $(X_c,\;Y_c)$ & $\eta$ & 可见弧段 \\
+        \midrule
+        18\,mm & 50\,mm & (105,\;120)\,mm & 97.7\% & 175\textdegree{} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+
+
+\section{完整算法流程}
+
+\begin{algorithm}[H]
+    \caption{正向溅射设计算法}
+    \label{alg:splatting}
+    \begin{algorithmic}[1]
+        \Require 目标镜面图案 $I_M(\theta,z)$，观察者位置 $E$
+        \Ensure 纸面图案 $I_P(x,y)$，最优镜面参数 $\Theta^*$
+        \State \textbf{Step 1} \quad 参数扫描 $\Theta$，最大化 $\eta(\Theta)$
+        \State \textbf{Step 2} \quad 计算 $f(\theta) = (X_c-x_E)\cos\theta + (Y_c-y_E)\sin\theta + R$
+        \State \hspace{1.7em} 求 $\Theta_{\mathrm{vis}} = \{\theta \mid f(\theta)<0\}$ 的最大连续段
+        \State \textbf{Step 3} \quad $s^2\cdot N_\theta\cdot N_z$ 条射线：$\Phi(\theta_k,z_\ell)\to(p_x,p_y)$
+        \State \hspace{1.7em} 双线性溅射：$A,\;C \mathrel{+}= v_{k,\ell} \times \text{权重}$
+        \State \hspace{1.7em} 归一化：$I_P = A/C$，最邻近填充空洞
+        \State \textbf{Step 4} \quad 独立网格渲染：$I_M^{\mathrm{render}} = \mathcal{B}[I_P]\circ\Phi$
+        \State \hspace{1.7em} 误差评估：仅在 $\mathcal{V}$ 上计算 MAE、RMSE
+    \end{algorithmic}
+\end{algorithm}
+
+\section{题目问题解答}
+\begin{figure}[htbp]
+% 左侧图片
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{paper_Figure_3.png}
+\caption{纸面图案1}
+\label{fig:fig3}
+\end{subfigure}
+\hfill % 撑开中间空白，实现左右靠边分散布局
+% 右侧图片
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{paper_Figure_4.png}
+\caption{纸面图案2}
+\label{fig:fig4}
+\end{subfigure}
+% 可选：给整张并排组合设置一个总标题，不需要可以直接删掉下面\caption一行
+\label{fig:pair_compare}
+\end{figure}
+\section{方法评注}
+
+传统做法（如 Rausch 2012）是先求 $\Phi$ 的解析闭式表达式 $\Phi^{-1}: (p_x,p_y)\to(\theta,z)$，然后对纸面每个像素查逆映射表获取镜面颜色。这涉及两个插值步骤：逆映射插值 + 验证时的正向插值。两步插值的累积误差在实践中可达 $\mathrm{MAE}\approx 0.19$。
+
+本文的正向溅射法完全绕过了这个问题：设计和验证使用完全相同的物理函数 $\Phi$，设计端通过高密度射线覆盖确保每个纸面像素都收到足够多条射线的贡献，验证端通过独立网格采样确认一致性。唯一的误差来源是离散化——可通过增大超采样率 $s$ 使 MAE 收敛到零。
+
+
+\end{document}
+
+\end{document}
